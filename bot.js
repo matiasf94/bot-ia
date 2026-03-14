@@ -7,11 +7,40 @@ if (!process.env.GEMINI_API_KEY) {
   throw new Error("Falta GEMINI_API_KEY");
 }
 
+const AI_DELAY_MS = 5 * 60 * 1000; // 5 minutos
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 let qrImageDataUrl = null;
 let botStatus = "iniciando";
+const chats = {};
+
+function getChatState(chatId) {
+  if (!chats[chatId]) {
+    chats[chatId] = {
+      history: [],
+      pendingTimer: null,
+      humanTookOver: false,
+      ignoreNextOwnMessage: false,
+      lastInboundText: ""
+    };
+  }
+  return chats[chatId];
+}
+
+function trimHistory(state) {
+  if (state.history.length > 20) {
+    state.history = state.history.slice(-20);
+  }
+}
+
+function clearPendingTimer(state) {
+  if (state.pendingTimer) {
+    clearTimeout(state.pendingTimer);
+    state.pendingTimer = null;
+  }
+}
 
 app.get("/", (req, res) => {
   const html = `
@@ -87,16 +116,16 @@ app.listen(PORT, () => {
 });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const historial = {};
 
 const PERSONALIDAD = [
-  "Eres Matias respondiendo sus mensajes de WhatsApp.",
-  "Responde en primera persona.",
-  "Tono directo, claro, cercano y humano.",
-  "Maximo 3 lineas.",
-  "Nunca digas que eres una IA.",
-  "Si no sabes algo exacto, di que lo confirmare personalmente.",
-  "Si parece familia o amigo, responde mas natural."
+  "Eres el agente personal de Matias Figueroa, emprendedor chileno.",
+  "Nunca hables como si fueras Matias. Hablas como su agente personal.",
+  "Debes responder en español de Chile natural, claro, simple y profesional.",
+  "Nunca uses modismos argentinos como: vos, tenes, queres, che, dale, barbaro, laburo, pibe, boludo.",
+  "Cuando respondas, di de forma natural que eres el agente personal de Matias y que el retomara la conversacion cuando vuelva.",
+  "No inventes informacion. Si no sabes algo exacto, di que Matias lo revisara cuando vuelva.",
+  "Maximo 3 lineas por respuesta.",
+  "No suenes robotico ni exageradamente formal."
 ].join(" ");
 
 const client = new Client({
@@ -158,52 +187,107 @@ client.on("disconnected", (reason) => {
   console.log("DISCONNECTED:", reason);
 });
 
-client.on("message", async (msg) => {
-  try {
-    if (msg.fromMe) return;
-    if (msg.from.includes("status")) return;
+client.on("message_create", async (msg) => {
+  if (!msg.fromMe) return;
 
-    const texto = (msg.body || "").trim();
-    if (!texto) return;
+  const chatId = msg.to || msg.from;
+  if (!chatId) return;
+  if (chatId.includes("status")) return;
+  if (chatId.endsWith("@g.us")) return;
 
-    const id = msg.from;
-    if (!historial[id]) historial[id] = [];
+  const texto = (msg.body || "").trim();
+  const state = getChatState(chatId);
 
-    historial[id].push({
-      role: "user",
+  if (state.ignoreNextOwnMessage) {
+    state.ignoreNextOwnMessage = false;
+    return;
+  }
+
+  clearPendingTimer(state);
+  state.humanTookOver = true;
+
+  if (texto) {
+    state.history.push({
+      role: "model",
       parts: [{ text: texto }]
     });
+    trimHistory(state);
+  }
 
-    if (historial[id].length > 10) {
-      historial[id].shift();
-    }
+  console.log("TAKEOVER_HUMANO:", chatId);
+});
 
+async function responderComoAgente(chatId) {
+  const state = getChatState(chatId);
+
+  if (state.humanTookOver) return;
+  if (!state.lastInboundText) return;
+
+  try {
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
       systemInstruction: PERSONALIDAD
     });
 
     const chat = model.startChat({
-      history: historial[id].slice(0, -1)
+      history: state.history.slice(0, -1)
     });
 
-    const result = await chat.sendMessage(texto);
+    const result = await chat.sendMessage(state.lastInboundText);
     let respuesta = result.response.text().trim();
 
     if (!respuesta) {
-      respuesta = "Ahora te respondo.";
+      respuesta = "Hola, soy el agente personal de Matias. El retomara la conversacion cuando vuelva.";
     }
 
-    historial[id].push({
+    state.history.push({
       role: "model",
       parts: [{ text: respuesta }]
     });
+    trimHistory(state);
 
-    await msg.reply(respuesta);
-    console.log("RESPONDIDO:", id, respuesta);
+    state.ignoreNextOwnMessage = true;
+    await client.sendMessage(chatId, respuesta);
+
+    console.log("RESPONDIDO:", chatId, respuesta);
   } catch (error) {
     console.error("ERROR_GEMINI:", error.message || error);
   }
+}
+
+client.on("message", async (msg) => {
+  if (msg.fromMe) return;
+
+  const chatId = msg.from;
+  if (!chatId) return;
+  if (chatId.includes("status")) return;
+  if (chatId.endsWith("@g.us")) return;
+
+  const texto = (msg.body || "").trim();
+  if (!texto) return;
+
+  const state = getChatState(chatId);
+
+  state.history.push({
+    role: "user",
+    parts: [{ text: texto }]
+  });
+  trimHistory(state);
+
+  state.lastInboundText = texto;
+
+  if (state.humanTookOver) {
+    console.log("MODO_HUMANO_ACTIVO:", chatId);
+    return;
+  }
+
+  clearPendingTimer(state);
+
+  state.pendingTimer = setTimeout(() => {
+    responderComoAgente(chatId);
+  }, AI_DELAY_MS);
+
+  console.log("TEMPORIZADOR_IA_5_MIN:", chatId);
 });
 
 (async () => {
