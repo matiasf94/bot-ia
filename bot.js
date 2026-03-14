@@ -3,7 +3,7 @@ const qrcode = require("qrcode-terminal");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 if (!process.env.GEMINI_API_KEY) {
-  throw new Error("Falta la variable GEMINI_API_KEY");
+  throw new Error("Falta GEMINI_API_KEY");
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -16,20 +16,35 @@ const PERSONALIDAD = [
   "Maximo 3 lineas.",
   "Nunca digas que eres una IA.",
   "Si no sabes algo exacto, di que lo confirmare personalmente.",
-  "Si el mensaje parece de familia o amigos, responde mas natural."
+  "Si parece familia o amigo, responde mas natural."
 ].join(" ");
 
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: process.env.WWEBJS_AUTH_PATH || ".wwebjs_auth"
   }),
+  authTimeoutMs: 120000,
+  qrMaxRetries: 5,
   puppeteer: {
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    headless: true,
+    timeout: 120000,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+      "--single-process",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding"
+    ]
   }
 });
 
 client.on("qr", (qr) => {
-  console.log("ESCANEA ESTE QR CON WHATSAPP");
+  console.log("ESCANEA_ESTE_QR");
   qrcode.generate(qr, { small: true });
 });
 
@@ -94,4 +109,19 @@ client.on("message", async (msg) => {
   }
 });
 
-client.initialize();
+(async () => {
+  try {
+    console.log("PROBANDO_WEB_WHATSAPP");
+    const res = await fetch("https://web.whatsapp.com/");
+    console.log("WEB_WHATSAPP_STATUS:", res.status);
+  } catch (e) {
+    console.error("WEB_WHATSAPP_FETCH_ERROR:", e.message || e);
+  }
+
+  try {
+    console.log("INICIANDO_CLIENTE");
+    await client.initialize();
+  } catch (e) {
+    console.error("INIT_ERROR:", e.message || e);
+  }
+})();
