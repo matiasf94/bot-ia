@@ -15,12 +15,13 @@ let pairingCode = null;
 const PHONE = process.env.PHONE_NUMBER;
 
 client.on("qr", async (qr) => {
-  console.log("QR recibido, solicitando codigo de emparejamiento...");
+  console.log("QR recibido, solicitando codigo...");
   try {
+    await new Promise(r => setTimeout(r, 3000));
     pairingCode = await client.requestPairingCode(PHONE);
-    console.log("CODIGO DE EMPAREJAMIENTO: " + pairingCode);
+    console.log("CODIGO: " + pairingCode);
   } catch(e) {
-    console.error("Error pairing code:", e.message);
+    console.error("Error completo:", JSON.stringify(e));
   }
 });
 
